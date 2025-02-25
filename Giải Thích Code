@@ -1,0 +1,139 @@
+#include <ESP8266WiFi.h> → Kết nối ESP8266 với WiFi
+#include <BlynkSimpleEsp8266.h> → Kết nối ESP8266 với Blynk
+#include "DHT.h" → Đọc dữ liệu từ cảm biến nhiệt độ & độ ẩm DHT11
+#include <LiquidCrystal_I2C.h> → Điều khiển màn hình LCD I2C
+-----------------------------------------------------------------------------------------------------------------
+#define BLYNK_TEMPLATE_ID "TMPL6JOeWJldW"
+#define BLYNK_TEMPLATE_NAME "Luonghoakhituongthuyvan"
+#define BLYNK_AUTH_TOKEN "fiPVcDVpDPGXjt9Zxgt-xQJwb-4Jbzt-" → Thông tin để ESP8266 gửi dữ liệu lên Blynk
+char ssid[] = "Nha Tro 1945";
+char pass[] = "nhatro1945"; → Tên và mật khẩu WiFi để ESP8266 kết nối mạng
+-----------------------------------------------------------------------------------------------------------------
+const int DHTPIN = D5; → ESP8266 đọc dữ liệu cảm biến từ chân D5
+const int DHTTYPE = DHT11; → Xác định loại cảm biến là DHT11
+DHT dht(DHTPIN, DHTTYPE);
+-----------------------------------------------------------------------------------------------------------------
+LiquidCrystal_I2C lcd(0x27, 16, 2); → Địa chỉ 0x27 là địa chỉ I2C của LCD
+LCD có 16 cột & 2 dòng
+-----------------------------------------------------------------------------------------------------------------
+const int hallSensorWaterPin = D3; → Chân đọc tín hiệu từ cảm biến đo mưa 
+const int hallSensorWindPin = D4; → Chân đọc tín hiệu từ cảm biến tốc độ gió  
+volatile int pulseCountWind = 0;    
+volatile int pulseCountWater = 0; → Biến đếm xung từ hai cảm biến   
+-----------------------------------------------------------------------------------------------------------------
+float radius = 60; // Bán kính phễu đo mưa (mm)
+float areaFunnel; 
+float areaStandard = 1000000; // Diện tích phễu chuẩn (mm²)
+float k; // Hệ số chuyển đổi lượng nước  → giúp tính toán lượng nước dựa trên số xung
+float waterPerPulse; // Lượng nước tính trên mỗi xung (ml) → Số ml nước tương ứng với một xung cảm biến mưa
+float totalRainfall = 0; // Tổng lượng mưa (ml)
+float circumference; // Chu vi gáo đo gió (m)
+float windSpeed; // Tốc độ gió (m/s)
+unsigned long windMeasurementTime = 1000; // Thời gian đo gió (ms)
+float distance; // Quãng đường gió di chuyển
+-----------------------------------------------------------------------------------------------------------------
+const int bluePin = D6; → Cảnh báo mưa lớn
+const int greenPin = D7; → Cảnh báo gió mạnh
+const int redPin = D8; → Cảnh báo nhiệt độ cao
+const float temperatureThreshold = 20; // Ngưỡng nhiệt độ
+const float windSpeedThreshold = 1; // Ngưỡng tốc độ gió
+const float rainfallThreshold = 2; // Ngưỡng lượng mưa
+-----------------------------------------------------------------------------------------------------------------
+void IRAM_ATTR countPulseWind() {
+  pulseCountWind++;
+}
+void IRAM_ATTR countPulseWater() {
+  pulseCountWater++;
+}
+Khi cảm biến Hall nhận được tín hiệu → xung tăng lên 1
+-----------------------------------------------------------------------------------------------------------------
+void displayOnLCD(float temperature, float humidity, float rainfall, float windSpeed) {
+  lcd.clear();
+  lcd.setCursor(0, 0); 
+  lcd.print("T:");
+  lcd.print(temperature);
+  lcd.print((char)223); 
+  lcd.print("C");
+
+  lcd.setCursor(10, 0); 
+  lcd.print("H:");
+  lcd.print(humidity);
+  lcd.print("%");
+  
+  lcd.setCursor(0, 1); 
+  lcd.print("R:");
+  lcd.print(rainfall);
+  lcd.print("mm");
+
+  lcd.setCursor(10, 1);
+  lcd.print("W:");
+  lcd.print(windSpeed);
+  lcd.print("m/s");
+}
+ → Hiển thị nhiệt độ, độ ẩm trên dòng 1
+ → Hiển thị lượng mưa & tốc độ gió trên dòng 2
+ → lcd.setCursor(x, y); → Đặt con trỏ đến vị trí cần hiển thị
+ → lcd.clear(); → Xóa màn hình LCD trước khi cập nhật dữ liệu mới
+-----------------------------------------------------------------------------------------------------------------
+void myTimerEvent() {
+  float temperature = dht.readTemperature(); → Đọc giá trị nhiệt độ từ cảm biến DHT11
+  float humidity = dht.readHumidity(); → Đọc giá trị độ ẩm từ cảm biến DHT11
+
+  Blynk.virtualWrite(V1, temperature); → Gửi nhiệt độ lên chân ảo V1 của Blynk
+  Blynk.virtualWrite(V2, humidity); → Gửi độ ẩm lên chân ảo V2 của Blynk
+
+  if (pulseCountWater > 0) {
+    totalRainfall += pulseCountWater * waterPerPulse; → Số lần cảm biến Hall phát hiện nước rơi vào phễu, → Lượng nước tương ứng
+với mỗi xung (ml)
+    Blynk.virtualWrite(V4, totalRainfall); → Tổng lượng mưa đã đo được
+    pulseCountWater = 0;
+  }
+  static unsigned long lastWindTime = 0;
+  if (millis() - lastWindTime >= windMeasurementTime) {
+    distance = pulseCountWind * circumference;
+    windSpeed = distance / (windMeasurementTime / 1000.0);
+    Blynk.virtualWrite(V5, windSpeed);
+    pulseCountWind = 0;
+    lastWindTime = millis(); Reset số xung để đo trong lần tiếp theo
+  }
+  displayOnLCD(temperature, humidity, totalRainfall, windSpeed);
+}
+-----------------------------------------------------------------------------------------------------------------
+void setup() {
+  Serial.begin(115200);
+  dht.begin();
+  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
+  lcd.init();
+  lcd.backlight();
+  timer.setInterval(1000L, myTimerEvent);
+}
+→ Hàm myTimerEvent() không chỉ đọc dữ liệu cảm biến và gửi lên Blynk mà còn điều khiển đèn LED dựa trên các ngưỡng cảnh báo.
+Nhiệt độ cao → Bật đèn đỏ
+Lượng mưa lớn → Bật đèn xanh dương
+Tốc độ gió mạnh → Bật đèn xanh lá
+-----------------------------------------------------------------------------------------------------------------
+void loop() {
+  Blynk.run();
+  timer.run();
+}
+Blynk.run(); → Duy trì kết nối với nền tảng Blynk, xử lý dữ liệu gửi/nhận giữa ESP8266 và ứng dụng Blynk.
+timer.run(); → Kiểm soát việc thực hiện các tác vụ theo lịch trình đã đặt với BlynkTimer.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
