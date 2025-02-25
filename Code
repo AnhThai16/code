@@ -1,0 +1,184 @@
+/* Điền thông tin từ Blynk Device Info vào đây */
+#define BLYNK_TEMPLATE_ID "TMPL6JOeWJldW"
+#define BLYNK_TEMPLATE_NAME "Luonghoakhituongthuyvan"
+#define BLYNK_AUTH_TOKEN "fiPVcDVpDPGXjt9Zxgt-xQJwb-4Jbzt-"
+/* Bỏ chú thích dòng này để tắt in Serial và tiết kiệm bộ nhớ */
+#define BLYNK_PRINT Serial
+
+#include <ESP8266WiFi.h>
+#include <BlynkSimpleEsp8266.h>
+#include "DHT.h" // Thư viện cảm biến DHT11
+#include <LiquidCrystal_I2C.h> // Thư viện cho màn hình LCD I2C
+
+// Thông tin WiFi
+char ssid[] = "Nha Tro 1945";
+char pass[] = "nhatro1945";
+
+// Khai báo cảm biến DHT
+const int DHTPIN = D5; // Chân D5 của ESP8266 kết nối với cảm biến
+const int DHTTYPE = DHT11; // Xác định loại cảm biến: DHT11 hoặc DHT22
+
+DHT dht(DHTPIN, DHTTYPE);
+BlynkTimer timer;
+
+// Cấu hình màn hình LCD
+LiquidCrystal_I2C lcd(0x27, 16, 2); // Địa chỉ I2C 0x27, LCD có 16 cột và 2 hàng
+
+// Cảm biến Hall và các biến liên quan
+const int hallSensorWaterPin = D3;  // Chân D3 dùng cho cảm biến mưa
+const int hallSensorWindPin = D4;   // Chân D4 dùng cho cảm biến gió
+volatile int pulseCountWind = 0;    // Biến đếm xung của cảm biến gió
+volatile int pulseCountWater = 0;   // Biến đếm xung của cảm biến mưa
+
+// Các biến tính toán
+float radius = 60; // Bán kính của phễu đo mưa (mm)
+float areaFunnel; // Diện tích phễu (mm²)
+float areaStandard = 1000000; // Diện tích phễu tiêu chuẩn (mm²)
+float k; // Tỷ lệ giữa diện tích phễu tiêu chuẩn và diện tích phễu thực tế
+float waterPerPulse; // Lượng nước trên mỗi xung (ml)
+float totalRainfall = 0; // Tổng lượng mưa đo được (ml)
+float circumference; // Chu vi của gáo đo gió (m)
+float windSpeed; // Tốc độ gió (m/s)
+unsigned long windMeasurementTime = 1000; // Thời gian đo gió (ms)
+float distance; // Quãng đường gió đi được
+
+// Chân LED
+const int bluePin = D6;
+const int greenPin = D7;
+const int redPin = D8;
+
+// Ngưỡng cảnh báo cho LED
+const float temperatureThreshold = 20; // Ngưỡng nhiệt độ
+const float windSpeedThreshold = 1; // Ngưỡng tốc độ gió
+const float rainfallThreshold = 2; // Ngưỡng lượng mưa (ml)
+
+// Ngắt (interrupt) cho cảm biến gió
+void IRAM_ATTR countPulseWind() {
+  pulseCountWind++;
+}
+
+// Ngắt (interrupt) cho cảm biến mưa
+void IRAM_ATTR countPulseWater() {
+  pulseCountWater++;
+}
+
+// Hàm hiển thị giá trị lên màn hình LCD
+void displayOnLCD(float temperature, float humidity, float rainfall, float windSpeed) {
+  // Xóa màn hình LCD
+  lcd.clear();
+  
+  // Đặt con trỏ và hiển thị nhiệt độ, độ ẩm trên dòng đầu tiên
+  lcd.setCursor(0, 0); // Dòng 1
+  lcd.print("T:");
+  lcd.print(temperature);
+  lcd.print((char)223);  // Ký tự độ (°)
+  lcd.print("C");
+
+  lcd.setCursor(10, 0); // Tiếp tục trên dòng 1
+  lcd.print("H:");
+  lcd.print(humidity);
+  lcd.print("%");
+  
+  // Đặt con trỏ và hiển thị lượng mưa, tốc độ gió trên dòng thứ hai
+  lcd.setCursor(0, 1); // Dòng 2
+  lcd.print("R:");
+  lcd.print(rainfall);
+  lcd.print("mm");
+
+  lcd.setCursor(10, 1); // Tiếp tục trên dòng 2
+  lcd.print("W:");
+  lcd.print(windSpeed);
+  lcd.print("m/s");
+}
+
+// Hàm này gửi dữ liệu cảm biến đến Blynk và cập nhật màn hình LCD
+void myTimerEvent() {
+  // Đọc nhiệt độ và độ ẩm
+  float temperature = dht.readTemperature();
+  float humidity = dht.readHumidity();
+
+  // Gửi nhiệt độ và độ ẩm đến Blynk
+  Blynk.virtualWrite(V1, temperature);
+  Blynk.virtualWrite(V2, humidity);
+
+  // Tính tổng lượng mưa dựa trên số xung
+  if (pulseCountWater > 0) {
+    totalRainfall += pulseCountWater * waterPerPulse;
+    Blynk.virtualWrite(V4, totalRainfall);
+    pulseCountWater = 0;
+  }
+
+  // Tính toán tốc độ gió
+  static unsigned long lastWindTime = 0;
+  if (millis() - lastWindTime >= windMeasurementTime) {
+    distance = pulseCountWind * circumference;
+    windSpeed = distance / (windMeasurementTime / 1000.0);
+    Blynk.virtualWrite(V5, windSpeed);
+    pulseCountWind = 0;
+    lastWindTime = millis();
+  }
+
+  // Hiển thị giá trị lên màn hình LCD
+  displayOnLCD(temperature, humidity, totalRainfall, windSpeed);
+  
+  // Điều khiển LED dựa trên giá trị ngưỡng
+  if (temperature > temperatureThreshold) {
+    digitalWrite(redPin, HIGH);   // Bật LED đỏ nếu nhiệt độ vượt ngưỡng
+  } else {
+    digitalWrite(redPin, LOW);    // Tắt LED đỏ nếu nhiệt độ dưới ngưỡng
+  }
+
+  if (totalRainfall > rainfallThreshold) {
+    digitalWrite(bluePin, HIGH);  // Bật LED xanh dương nếu lượng mưa vượt ngưỡng
+  } else {
+    digitalWrite(bluePin, LOW);   // Tắt LED xanh dương nếu lượng mưa dưới ngưỡng
+  }
+
+  if (windSpeed > windSpeedThreshold) {
+    digitalWrite(greenPin, HIGH); // Bật LED xanh lá nếu tốc độ gió vượt ngưỡng
+  } else {
+    digitalWrite(greenPin, LOW);  // Tắt LED xanh lá nếu tốc độ gió dưới ngưỡng
+  }
+}
+
+void setup() {
+  // Khởi tạo cổng Serial
+  Serial.begin(115200);
+
+  // Khởi động cảm biến DHT
+  dht.begin();
+
+  // Thiết lập chế độ chân cho cảm biến Hall và LED
+  pinMode(hallSensorWindPin, INPUT);
+  pinMode(hallSensorWaterPin, INPUT);
+  pinMode(redPin, OUTPUT);
+  pinMode(greenPin, OUTPUT);
+  pinMode(bluePin, OUTPUT);
+
+  // Gắn ngắt cho cảm biến Hall
+  attachInterrupt(digitalPinToInterrupt(hallSensorWindPin), countPulseWind, FALLING);
+  attachInterrupt(digitalPinToInterrupt(hallSensorWaterPin), countPulseWater, FALLING);
+
+  // Tính toán diện tích phễu và lượng nước mỗi xung
+  areaFunnel = 3.14 * radius * radius;
+  k = areaStandard / areaFunnel;
+  waterPerPulse = (5 * k) / 1000;
+
+  // Tính toán chu vi gáo đo gió
+  circumference = 3.14 * 0.18;
+
+  // Khởi tạo Blynk
+  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
+
+  // Khởi tạo màn hình LCD
+  lcd.init();
+  lcd.backlight(); // Bật đèn nền LCD
+  
+  // Thiết lập gọi hàm đo dữ liệu mỗi giây
+  timer.setInterval(1000L, myTimerEvent);
+}
+
+void loop() {
+  Blynk.run();
+  timer.run();
+}
